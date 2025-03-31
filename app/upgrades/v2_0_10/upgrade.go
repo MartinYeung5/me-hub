@@ -716,6 +716,9 @@ func migrateFixedDeposit(ctx sdk.Context, stakingKeeper *wstakingkeeper.Keeper, 
 		if !found {
 			panic(fmt.Errorf("region not found: %s", meid.RegionId))
 		}
+		if region.FixedDepositAmount.IsNil() {
+			region.FixedDepositAmount = sdk.ZeroInt()
+		}
 		region.FixedDepositAmount = region.FixedDepositAmount.Add(fixedDeposit.Principal.Amount)
 		stakingKeeper.SetRegion(ctx, region)
 	}
