@@ -83,47 +83,53 @@ func CreateUpgradeHandler(
 		setNewModuleParams(ctx, keepers)
 
 		ctx.Logger().Info("3.migrate dao module")
-		migrateDao(ctx, keepers.AccountKeeper, keepers.DaoKeeper)
+		MigrateDao(ctx, keepers.AccountKeeper, keepers.DaoKeeper)
 
 		ctx.Logger().Info("4.migrate validators")
 		migrateValidators(ctx, keepers.StakingKeeper)
 
-		ctx.Logger().Info("9.fixed deposit")
-		migrateFixedDeposit(ctx, keepers.StakingKeeper, keepers.KycKeeper, keepers.BankKeeper)
+		ctx.Logger().Info("5.fixed deposit")
+		MigrateFixedDeposit(ctx, keepers.StakingKeeper, keepers.KycKeeper, keepers.BankKeeper)
 
-		ctx.Logger().Info("5.init kyc and did module")
+		ctx.Logger().Info("6.init kyc and did module")
 		homePath := GetPath(keepers.UpgradeKeeper)
 		migrateKycModule(ctx, keepers.KycKeeper, homePath)
 
-		ctx.Logger().Info("6.migrate kyc and did")
-		migrateKycData(ctx,
+		ctx.Logger().Info("7.migrate kyc and did")
+		MigrateKycData(ctx,
 			keepers.StakingKeeper,
 			keepers.DidKeeper,
 			keepers.KycKeeper,
 			keepers.WNFTKeeper,
 			keepers.GroupKeeper,
-			homePath)
+			homePath,
+			RealDIDReader{},
+			RealKycPubkeyReader{})
 
-		ctx.Logger().Info("6.migrate nft ipfs uri")
+		ctx.Logger().Info("8.migrate nft ipfs uri")
 		//migrateNftUri(ctx, keepers.WNFTKeeper, homePath)
 
 		// Start running the module migrations
 		logger.Debug("running module migrations ...")
 		//ctx = ctx.WithChainID(metypes.V2ChainId)
 
-		ctx.Logger().Info("6.migrate region class id, fix name...")
+		ctx.Logger().Info("9.migrate region class id, fix name...")
 		migrateRegionClassName(ctx, keepers.StakingKeeper, keepers.WNFTKeeper)
 
-		ctx.Logger().Info("7.migrate group")
+		ctx.Logger().Info("10.migrate group")
 		migrateGroup(ctx, homePath, keepers.GroupKeeper, keepers.StakingKeeper, keepers.KycKeeper)
 
-		ctx.Logger().Info("8.migrate delegation")
+		ctx.Logger().Info("11.migrate delegation")
 		migrateDelegation(ctx, homePath, keepers.StakingKeeper, keepers.KycKeeper)
 
 		// create a new module account
 		macc := authtypes.NewEmptyModuleAccount(streamermoduletypes.ModuleName)
 		maccI := (keepers.AccountKeeper.NewAccount(ctx, macc)).(authtypes.ModuleAccountI) // set the account number
 		keepers.AccountKeeper.SetModuleAccount(ctx, maccI)
+
+		// check
+		CheckDao(ctx, keepers.AccountKeeper, keepers.DaoKeeper)
+
 		return mm.RunMigrations(ctx, configurator, fromVM)
 	}
 }
@@ -236,7 +242,7 @@ func setNewModuleParams(ctx sdk.Context, keepers *appkeepers.AppKeepers) {
 	}
 }
 
-func migrateDao(ctx sdk.Context, ak authkeeper.AccountKeeper, dk daokeeper.Keeper) {
+func MigrateDao(ctx sdk.Context, ak authkeeper.AccountKeeper, dk daokeeper.Keeper) {
 	daoAddresses := daotypes.DaoAddresses{
 		GlobalDao:      ak.GetAccountAddressByID(ctx, 0),
 		MeidDao:        ak.GetAccountAddressByID(ctx, 1),
@@ -244,6 +250,25 @@ func migrateDao(ctx sdk.Context, ak authkeeper.AccountKeeper, dk daokeeper.Keepe
 		AirdropAddress: ak.GetAccountAddressByID(ctx, 3),
 	}
 	dk.SetDaoAddresses(ctx, daoAddresses)
+}
+
+func CheckDao(ctx sdk.Context, ak authkeeper.AccountKeeper, dk daokeeper.Keeper) {
+	daoAddresses := daotypes.DaoAddresses{
+		GlobalDao:      ak.GetAccountAddressByID(ctx, 0),
+		MeidDao:        ak.GetAccountAddressByID(ctx, 1),
+		DevOperator:    ak.GetAccountAddressByID(ctx, 2),
+		AirdropAddress: ak.GetAccountAddressByID(ctx, 3),
+	}
+	dao, found := dk.GetDaoAddresses(ctx)
+	if !found {
+		panic("dao set failed, not found")
+	}
+	if dao.GlobalDao != daoAddresses.GlobalDao {
+		panic("dao set failed, global dao")
+	}
+	if dao.MeidDao != dk.GetMeidDao(ctx) {
+		panic("dao set failed, meid dao")
+	}
 }
 
 func migrateValidators(ctx sdk.Context, stakingKeeper *wstakingkeeper.Keeper) {
@@ -296,13 +321,15 @@ func migrateKycModule(ctx sdk.Context, kycKeeper *kyckeeper.Keeper, path string)
 	kycKeeper.SetService(ctx, service)
 }
 
-func migrateKycData(ctx sdk.Context,
+func MigrateKycData(ctx sdk.Context,
 	stakingKeeper *wstakingkeeper.Keeper,
 	didKeeper *didkeeper.Keeper,
 	kycKeeper *kyckeeper.Keeper,
 	nftKeeper *wnftkeeper.Keeper,
 	gk *groupkeeper.Keeper,
-	homePath string) {
+	homePath string,
+	didReader DIDReader,
+	kycPubkeyReader KycPubkeyReader) {
 	// get all data from old module
 	meids := stakingKeeper.GetAllMeid(ctx)
 
@@ -311,12 +338,12 @@ func migrateKycData(ctx sdk.Context,
 		panic("kyc: service not found")
 	}
 
-	didData, err := ReadDID(homePath)
+	didData, err := didReader.ReadDID(filepath.Join(homePath, didFilePath))
 	if err != nil {
 		panic(fmt.Sprintf("read did: %v", err))
 	}
 
-	accountPubkey, err := ReadKycPubkey(homePath)
+	accountPubkey, err := kycPubkeyReader.ReadKycPubkey(filepath.Join(homePath, kycPubkeyFilePath))
 	if err != nil {
 		panic(err)
 	}
@@ -340,18 +367,14 @@ func migrateKycData(ctx sdk.Context,
 
 	// Iterate over old data and transform it into new data structure
 	didNumber := 9998887776660
-	for _, oldRecord := range meids {
-		didStr := fmt.Sprintf("%d", didNumber)
-		if kycKeeper.HasDidInfo(ctx, didStr) {
-			didNumber++
-		}
-		did, ok := didData[oldRecord.Account]
+	for _, meid := range meids {
+		did, ok := didData[meid.Account]
 		if ok && len(did.Did) > 0 {
 			didInfo := didtypes.DidInfo{
 				Did:      did.Did,
-				Address:  oldRecord.Account,
-				Pubkey:   accountPubkey[oldRecord.Account],
-				RegionId: oldRecord.RegionId,
+				Address:  meid.Account,
+				Pubkey:   accountPubkey[meid.Account],
+				RegionId: meid.RegionId,
 				KycLevel: didtypes.KycLevel(did.Level),
 				Status:   didtypes.DID_STATUS_ACTIVE,
 			}
@@ -360,13 +383,13 @@ func migrateKycData(ctx sdk.Context,
 				Sid:  service.Sid,
 				Uri:  did.KycUri,
 				Hash: did.KycUriHash,
-				Data: []byte(oldRecord.RegionId),
+				Data: []byte(meid.RegionId),
 			}
 			if did.Level == 1 {
-				stakingKeeper.SetInviterReward(ctx, oldRecord.Account)
+				stakingKeeper.SetInviterReward(ctx, meid.Account)
 			}
 			// write new data to the new module s storage
-			didKeeper.SetDID(ctx, sdk.MustAccAddressFromBech32(oldRecord.Account), did.Did)
+			didKeeper.SetDID(ctx, sdk.MustAccAddressFromBech32(meid.Account), did.Did)
 			didKeeper.SetDidInfo(ctx, didInfo.Did, didInfo)
 			didKeeper.SetCredential(
 				ctx,
@@ -374,13 +397,20 @@ func migrateKycData(ctx sdk.Context,
 				service.Sid,
 				vc,
 			)
-			didKeeper.AddFilters(ctx, did.Did, service.Sid, [][]byte{[]byte(oldRecord.RegionId)}, vc)
+			didKeeper.AddFilters(ctx, did.Did, service.Sid, [][]byte{[]byte(meid.RegionId)}, vc)
+			migrateNFTtoSBT(ctx, stakingKeeper, meid, nftKeeper, kycKeeper, did)
 		} else {
+			didStr := fmt.Sprintf("%d", didNumber)
+			for kycKeeper.HasDidInfo(ctx, didStr) {
+				didNumber++
+				didStr = fmt.Sprintf("%d", didNumber)
+			}
+			didNumber++
 			didInfo := didtypes.DidInfo{
 				Did:      didStr,
-				Address:  oldRecord.Account,
+				Address:  meid.Account,
 				Pubkey:   "",
-				RegionId: oldRecord.RegionId,
+				RegionId: meid.RegionId,
 				KycLevel: didtypes.KYC_LEVEL_ONE,
 				Status:   didtypes.DID_STATUS_ACTIVE,
 			}
@@ -389,11 +419,11 @@ func migrateKycData(ctx sdk.Context,
 				Sid:  "kyc",
 				Uri:  "",
 				Hash: "",
-				Data: []byte(oldRecord.RegionId),
+				Data: []byte(meid.RegionId),
 			}
-			stakingKeeper.SetInviterReward(ctx, oldRecord.Account)
+			stakingKeeper.SetInviterReward(ctx, meid.Account)
 			// write new data to the new module s storage
-			didKeeper.SetDID(ctx, sdk.MustAccAddressFromBech32(oldRecord.Account), didStr)
+			didKeeper.SetDID(ctx, sdk.MustAccAddressFromBech32(meid.Account), didStr)
 			didKeeper.SetDidInfo(ctx, didInfo.Did, didInfo)
 			didKeeper.SetCredential(
 				ctx,
@@ -401,18 +431,24 @@ func migrateKycData(ctx sdk.Context,
 				service.Sid,
 				vc,
 			)
-			didKeeper.AddFilters(ctx, didStr, service.Sid, [][]byte{[]byte(oldRecord.RegionId)}, vc)
+			didKeeper.AddFilters(ctx, didStr, service.Sid, [][]byte{[]byte(meid.RegionId)}, vc)
+			migrateNFTtoSBT(ctx, stakingKeeper, meid, nftKeeper, kycKeeper, DidData{
+				Did:        didStr,
+				Level:      1,
+				Uri:        "",
+				UriHash:    "",
+				KycUri:     "",
+				KycUriHash: "",
+			})
 		}
-		didNumber++
-		migrateNFTtoSBT(ctx, stakingKeeper, oldRecord, nftKeeper, kycKeeper, did)
 
-		if oldRecord.RewardType == 1 {
+		if meid.RewardType == 1 {
 			gk.SetMemberJoined(ctx, megrouptypes.MemberJoined{
-				Address: oldRecord.Account,
+				Address: meid.Account,
 				GroupId: 0,
 			})
 		}
-		stakingKeeper.RemoveMeid(ctx, oldRecord.Account, oldRecord.RegionId)
+		stakingKeeper.RemoveMeid(ctx, meid.Account, meid.RegionId)
 	}
 }
 
@@ -422,11 +458,6 @@ func migrateNFTtoSBT(ctx sdk.Context,
 	nftKeeper *wnftkeeper.Keeper,
 	kycKeeper *kyckeeper.Keeper,
 	did DidData) {
-	_, found := stakingKeeper.GetRegion(ctx, oldRecord.RegionId)
-	if !found {
-		panic(fmt.Sprintf("kyc: region %s not found", oldRecord.RegionId))
-	}
-
 	if err := kycKeeper.SetSBT(
 		ctx,
 		nft.NFT{
@@ -463,19 +494,6 @@ func migrateNftUri(ctx sdk.Context,
 	}
 }
 
-func ReadKycPubkey(homePath string) (map[string]string, error) {
-	data, err := ioutil.ReadFile(filepath.Join(homePath, kycPubkeyFilePath))
-	if err != nil {
-		return nil, err
-	}
-	accounts := make(map[string]string)
-	err = json.Unmarshal(data, &accounts)
-	if err != nil {
-		return nil, err
-	}
-	return accounts, nil
-}
-
 func ReadIssuer(path string) (issuer []didtypes.DidInfo, err error) {
 	data, err := ioutil.ReadFile(filepath.Join(path, issuerFilePath))
 	if err != nil {
@@ -486,28 +504,6 @@ func ReadIssuer(path string) (issuer []didtypes.DidInfo, err error) {
 		return issuer, err
 	}
 	return issuer, nil
-}
-
-type DidData struct {
-	Did        string `json:"did"`
-	Level      uint64 `json:"level"`
-	Uri        string `json:"uri"`
-	UriHash    string `json:"uri_hash"`
-	KycUri     string `json:"kyc_uri"`
-	KycUriHash string `json:"kyc_uri_hash"`
-}
-
-func ReadDID(path string) (map[string]DidData, error) {
-	data, err := ioutil.ReadFile(filepath.Join(path, didFilePath))
-	if err != nil {
-		return nil, err
-	}
-	list := make(map[string]DidData)
-	err = json.Unmarshal(data, &list)
-	if err != nil {
-		return nil, err
-	}
-	return list, nil
 }
 
 func migrateRegionClassName(ctx sdk.Context, stakingKeeper *wstakingkeeper.Keeper, nftKeeper *wnftkeeper.Keeper) {
@@ -701,7 +697,7 @@ func migrateDelegation(ctx sdk.Context, homePath string, stakingKeeper *wstaking
 	})
 }
 
-func migrateFixedDeposit(ctx sdk.Context, stakingKeeper *wstakingkeeper.Keeper, kk *kyckeeper.Keeper, bk wbankkeeper.BaseKeeperWrapper) {
+func MigrateFixedDeposit(ctx sdk.Context, stakingKeeper *wstakingkeeper.Keeper, kk *kyckeeper.Keeper, bk wbankkeeper.BaseKeeperWrapper) {
 	balance := bk.GetBalance(ctx, authtypes.NewModuleAddress(wstakingtypes.FixedDepositPrincipalPool), params.BaseDenom)
 
 	fixedDeposits := stakingKeeper.GetAllFixedDeposit(ctx)

@@ -1,20 +1,17 @@
 package v2_0_10_test
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
+	"github.com/st-chain/me-hub/app/params"
 	"github.com/st-chain/me-hub/app/upgrades/v2_0_10"
-	"math/big"
+	"github.com/st-chain/me-hub/utils"
+	wstakingtypes "github.com/st-chain/me-hub/x/wstaking/types"
 	"testing"
 	"time"
 
-	abci "github.com/cometbft/cometbft/abci/types"
 	cometbftproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	upgradetypes "github.com/cosmos/cosmos-sdk/x/upgrade/types"
-	incentivestypes "github.com/st-chain/me-hub/x/incentives/types"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/st-chain/me-hub/app"
@@ -24,113 +21,168 @@ import (
 // UpgradeTestSuite defines the structure for the upgrade test suite
 type UpgradeTestSuite struct {
 	suite.Suite
-	Ctx sdk.Context
-	App *app.App
+	Ctx             sdk.Context
+	App             *app.App
+	DIDReader       v2_0_10.DIDReader
+	KycPubkeyReader v2_0_10.KycPubkeyReader
+	mockAddress1    string
+	mockAddress2    string
+	mockAddress3    string
+	mockDid1        string
 }
 
-// SetupTest initializes the necessary items for each test
-func (s *UpgradeTestSuite) SetupTest(t *testing.T) {
-	s.App = apptesting.Setup(t, false)
-	s.Ctx = s.App.BaseApp.NewContext(false, cometbftproto.Header{Height: 1, ChainID: "dymension_100-1", Time: time.Now().UTC()})
-}
-
-// TestUpgradeTestSuite runs the suite of tests for the upgrade handler
 func TestUpgradeTestSuite(t *testing.T) {
 	suite.Run(t, new(UpgradeTestSuite))
 }
 
-var (
-	DYM = sdk.NewIntFromBigInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
-
-	// CreateGaugeFee is the fee required to create a new gauge.
-	expectCreateGaugeFee = DYM.Mul(sdk.NewInt(10))
-	// AddToGagugeFee is the fee required to add to gauge.
-	expectAddToGaugeFee = sdk.ZeroInt()
-
-	expectDelayedackEpochIdentifier = "hour"
-	expectDelayedackBridgingFee     = sdk.NewDecWithPrec(1, 3)
-)
-
-const (
-	dummyUpgradeHeight          = 5
-	expectRollappsEnabled       = false
-	expectDisputePeriodInBlocks = 120960
-	expectMinBond               = "1000000000000000000000"
-)
-
-// TestUpgrade is a method of UpgradeTestSuite to test the upgrade process.
-func (s *UpgradeTestSuite) TestUpgrade() {
-	testCases := []struct {
-		msg         string
-		upgrade     func()
-		postUpgrade func() error
-		expPass     bool
-	}{
-		{
-			"Test that upgrade does not panic and sets correct parameters",
-
-			func() {
-				// Run upgrade
-				s.Ctx = s.Ctx.WithBlockHeight(dummyUpgradeHeight - 1)
-				plan := upgradetypes.Plan{Name: "v3", Height: dummyUpgradeHeight}
-				err := s.App.UpgradeKeeper.ScheduleUpgrade(s.Ctx, plan)
-				s.Require().NoError(err)
-				_, exists := s.App.UpgradeKeeper.GetUpgradePlan(s.Ctx)
-				s.Require().True(exists)
-
-				s.Ctx = s.Ctx.WithBlockHeight(dummyUpgradeHeight)
-				// simulate the upgrade process not panic.
-				s.Require().NotPanics(func() {
-					// simulate the upgrade process.
-					s.App.BeginBlocker(s.Ctx, abci.RequestBeginBlock{})
-				})
+func (s *UpgradeTestSuite) SetupTest() {
+	s.App = apptesting.Setup(s.T(), false)
+	s.Ctx = s.App.BaseApp.NewContext(false, cometbftproto.Header{Height: 1, ChainID: "dymension_100-1", Time: time.Now().UTC()})
+	s.mockAddress1 = "me18uungln5qxndqelavjnzny6z87v530hmm74dtm" // maple skin present glad name second struggle correct submit learn guitar refuse common become sphere output pattern annual riot master tent buddy aisle abuse
+	s.mockAddress2 = "me1lepklhvskft6cr5e0lzce0vwgpjtq6esmkjdga" // upon gate call badge film access impact adjust slow uncle trust path remove drip pulp pact already grape mouse benefit era bridge annual frost
+	s.mockAddress3 = "me1vlljzn8mhy68dgatgl8hn24a0sgx2vk8ffm8hd" // upon gate call badge film access impact adjust slow uncle trust path remove drip pulp pact already grape mouse benefit era bridge annual frost
+	s.mockDid1 = "9998887776660"
+	s.DIDReader = MockDIDReader{
+		Data: map[string]v2_0_10.DidData{
+			s.mockAddress1: {
+				Did:        s.mockDid1,
+				Uri:        "https://example.com/nft1/metadata.json",
+				UriHash:    "e00d196344dbd54550dadeab1167302ef39fade96eb211e302693a512ef131e1",
+				KycUri:     "https://example.com/kyc/metadata.json",
+				KycUriHash: "e00d196344dbd54550dadeab1167302ef39fade96eb211e302693a512ef131e2",
 			},
-			func() error {
-				// Post-update validation to ensure parameters are correctly set
-
-				// Check Delayedack parameters
-				delayedackParams := s.App.DelayedAckKeeper.GetParams(s.Ctx)
-				if delayedackParams.EpochIdentifier != expectDelayedackEpochIdentifier ||
-					!delayedackParams.BridgingFee.Equal(expectDelayedackBridgingFee) {
-					return fmt.Errorf("delayedack parameters not set correctly")
-				}
-
-				// Check Rollapp parameters
-				rollappParams := s.App.RollappKeeper.GetParams(s.Ctx)
-				if rollappParams.RollappsEnabled != expectRollappsEnabled || rollappParams.DisputePeriodInBlocks != expectDisputePeriodInBlocks {
-					return fmt.Errorf("rollapp parameters not set correctly")
-				}
-
-				// Check Sequencer parameters
-				seqParams := s.App.SequencerKeeper.GetParams(s.Ctx)
-				if seqParams.MinBond.Amount.String() != expectMinBond {
-					return fmt.Errorf("sequencer parameters not set correctly")
-				}
-
-				// Check Incentives parameters
-				if !incentivestypes.CreateGaugeFee.Equal(expectCreateGaugeFee) || !incentivestypes.AddToGaugeFee.Equal(expectAddToGaugeFee) {
-					return fmt.Errorf("incentives parameters not set correctly")
-				}
-
-				return nil
-			},
-			true,
+		},
+		Err: nil,
+	}
+	s.KycPubkeyReader = MockKycPubkeyReader{
+		Data: map[string]string{
+			s.mockAddress1: "{\"@type\":\"/cosmos.crypto.secp256k1.PubKey\",\"key\":\"Anmi0DiLED1oGRiVIPO4n6HSnk7iArQBdeR1HnHxodmB\"}",
 		},
 	}
+}
 
-	for _, tc := range testCases {
-		s.Run(fmt.Sprintf("Case %s", tc.msg), func() {
-			s.SetupTest(s.T()) // Reset for each case
+func (s *UpgradeTestSuite) TestReadDidData() {
+	data, err := s.DIDReader.ReadDID("dummy_path")
+	s.Require().NoError(err)
+	first, ok := data[s.mockAddress1]
+	s.Require().True(ok)
+	s.Require().EqualValues(s.mockDid1, first.Did)
+}
 
-			tc.upgrade()
-			err := tc.postUpgrade()
-			if tc.expPass {
-				s.Require().NoError(err)
-			} else {
-				s.Require().Error(err)
-			}
-		})
-	}
+func (s *UpgradeTestSuite) TestReadKycPubkey() {
+	data, err := s.KycPubkeyReader.ReadKycPubkey("dummy_path")
+	s.Require().NoError(err)
+	first, ok := data[s.mockAddress1]
+	s.Require().True(ok)
+	s.Require().EqualValues("{\"@type\":\"/cosmos.crypto.secp256k1.PubKey\",\"key\":\"Anmi0DiLED1oGRiVIPO4n6HSnk7iArQBdeR1HnHxodmB\"}", first)
+}
+
+func (s *UpgradeTestSuite) TestUpgradeMigrateKycData() {
+	s.App.StakingKeeper.SetMeid(s.Ctx, wstakingtypes.Meid{
+		Account:    s.mockAddress1,
+		Creator:    "",
+		RegionId:   wstakingtypes.MeEarthRegionId,
+		RegionName: wstakingtypes.MeEarthRegionName,
+		RewardType: 0,
+	})
+
+	s.App.StakingKeeper.SetMeid(s.Ctx, wstakingtypes.Meid{
+		Account:    s.mockAddress2,
+		Creator:    "",
+		RegionId:   wstakingtypes.MeEarthRegionId,
+		RegionName: wstakingtypes.MeEarthRegionName,
+		RewardType: 0,
+	})
+
+	s.App.StakingKeeper.SetMeid(s.Ctx, wstakingtypes.Meid{
+		Account:    s.mockAddress3,
+		Creator:    "",
+		RegionId:   wstakingtypes.MeEarthRegionId,
+		RegionName: wstakingtypes.MeEarthRegionName,
+		RewardType: 0,
+	})
+
+	// Call the MigrateKycData function
+	v2_0_10.MigrateKycData(s.Ctx,
+		s.App.StakingKeeper,
+		s.App.DidKeeper,
+		s.App.KycKeeper,
+		s.App.WNFTKeeper,
+		s.App.GroupKeeper,
+		"dummy_path",
+		s.DIDReader,
+		s.KycPubkeyReader)
+
+	// Verify the DID data for mockAddress1
+	did, found := s.App.DidKeeper.GetDID(s.Ctx, sdk.MustAccAddressFromBech32(s.mockAddress1))
+	s.Require().True(found)
+	s.Require().Equal(s.mockDid1, did)
+
+	// Verify the KYC public key data for mockAddress1
+	didInfo, found := s.App.DidKeeper.GetDidInfo(s.Ctx, s.mockDid1)
+	s.Require().True(found)
+	s.Require().Equal("{\"@type\":\"/cosmos.crypto.secp256k1.PubKey\",\"key\":\"Anmi0DiLED1oGRiVIPO4n6HSnk7iArQBdeR1HnHxodmB\"}", didInfo.Pubkey)
+
+	// Verify the NFT URI and URI hash for mockAddress1
+	sbt, found := s.App.KycKeeper.GetSBT(s.Ctx, s.mockDid1)
+	s.Require().True(found)
+	s.Require().Equal("https://example.com/nft1/metadata.json", sbt.Uri)
+	s.Require().Equal("e00d196344dbd54550dadeab1167302ef39fade96eb211e302693a512ef131e1", sbt.UriHash)
+
+	// Verify the KYC URI and URI hash for mockAddress1
+	kyc, found := s.App.KycKeeper.GetKYC(s.Ctx, s.mockDid1)
+	s.Require().True(found)
+	s.Require().Equal("https://example.com/kyc/metadata.json", kyc.Uri)
+	s.Require().Equal("e00d196344dbd54550dadeab1167302ef39fade96eb211e302693a512ef131e2", kyc.Hash)
+
+	// check kyc filters
+	filters, f := s.App.KycKeeper.GetFilters(s.Ctx, s.mockDid1)
+	s.Require().True(f)
+	s.Require().Len(filters, 1)
+	s.Require().EqualValues(wstakingtypes.MeEarthRegionId, string(filters[0]))
+
+	// Verify that mockAddress2 has no DidData and pubkey data
+	did2, did2Found := s.App.DidKeeper.GetDID(s.Ctx, sdk.MustAccAddressFromBech32(s.mockAddress2))
+	s.Require().True(did2Found)
+	//s.Require().EqualValues("9998887776660", did2)
+	s.T().Log(did2)
+	did2Info, did2Found := s.App.DidKeeper.GetDidInfo(s.Ctx, did2)
+	s.Require().True(did2Found)
+	s.Require().EqualValues(wstakingtypes.MeEarthRegionId, did2Info.RegionId)
+
+	// Verify the NFT URI and URI hash for mockAddress1
+	sbt, found = s.App.KycKeeper.GetSBT(s.Ctx, did2)
+	s.Require().True(found)
+	s.Require().EqualValues("kyc", sbt.GetClassId())
+
+	// Verify the KYC URI and URI hash for mockAddress1
+	kyc, found = s.App.KycKeeper.GetKYC(s.Ctx, did2)
+	s.Require().True(found)
+	s.Require().EqualValues(wstakingtypes.MeEarthRegionId, string(kyc.GetData()))
+
+	// Verify that mockAddress3 has no DidData and pubkey data
+	did3, did3Found := s.App.DidKeeper.GetDID(s.Ctx, sdk.MustAccAddressFromBech32(s.mockAddress3))
+	s.Require().True(did3Found)
+	s.T().Log(did3)
+
+	did3Info, did3Found := s.App.DidKeeper.GetDidInfo(s.Ctx, did3)
+	s.Require().True(did3Found)
+	s.Require().EqualValues(wstakingtypes.MeEarthRegionId, did3Info.RegionId)
+
+	_, meidFound := s.App.StakingKeeper.GetMeid(s.Ctx, s.mockAddress1)
+	s.Require().False(meidFound)
+
+	_, meidFound = s.App.StakingKeeper.GetMeid(s.Ctx, s.mockAddress2)
+	s.Require().False(meidFound)
+
+	_, meidFound = s.App.StakingKeeper.GetMeid(s.Ctx, s.mockAddress3)
+	s.Require().False(meidFound)
+
+	// check kyc filters
+	filters, f = s.App.KycKeeper.GetFilters(s.Ctx, did2)
+	s.Require().True(f)
+	s.Require().Len(filters, 1)
+	s.Require().EqualValues(wstakingtypes.MeEarthRegionId, string(filters[0]))
 }
 
 func (s *UpgradeTestSuite) TestDidData() {
@@ -138,42 +190,51 @@ func (s *UpgradeTestSuite) TestDidData() {
 	list["me1ujufste3u23tpq3qhlq77u94nhw99emy3pr4p2"] = v2_0_10.DidData{
 		Did:     "2405208027001",
 		Uri:     "https://example.com/nft/metadata.json",
-		UriHash: calculateUriHash("https://example.com/nft/metadata.json"),
+		UriHash: utils.CalculateUriHash("https://example.com/nft/metadata.json"),
 	}
 	list["me1phcakjkaf9vrn6jgttl3747dgnnpt88rt9440d"] = v2_0_10.DidData{
 		Did:     "CHN2405204091002",
 		Uri:     "https://example.com/nft1/metadata.json",
-		UriHash: calculateUriHash("https://example.com/nft1/metadata.json"),
+		UriHash: utils.CalculateUriHash("https://example.com/nft1/metadata.json"),
 	}
 	marshal, err := json.MarshalIndent(list, "", "  ")
 	s.Require().NoError(err)
 	s.T().Log(string(marshal))
 }
 
-func (s *UpgradeTestSuite) TestReadDidData() {
-	list := `{
-          "me1phcakjkaf9vrn6jgttl3747dgnnpt88rt9440d": {
-            "did": "CHN2405204091002",
-            "uri": "https://example.com/nft1/metadata.json",
-            "uri_hash": "e00d196344dbd54550dadeab1167302ef39fade96eb211e302693a512ef131e1"
-          },
-          "me1ujufste3u23tpq3qhlq77u94nhw99emy3pr4p2": {
-            "did": "2405208027001",
-            "uri": "https://example.com/nft/metadata.json",
-            "uri_hash": "9d4b6d9f5207db3461c26591fc4dd2a8e46ad4ce0d157f80b00bd57f52c90dec"
-          }
-        }`
-	data := make(map[string]v2_0_10.DidData)
-	err := json.Unmarshal([]byte(list), &data)
-	s.Require().NoError(err)
-	first, ok := data["me1phcakjkaf9vrn6jgttl3747dgnnpt88rt9440d"]
-	s.Require().True(ok)
-	s.Require().EqualValues("CHN2405204091002", first.Did)
-}
+func (s *UpgradeTestSuite) TestMigrateFixedDeposit() {
+	s.App.StakingKeeper.SetMeid(s.Ctx, wstakingtypes.Meid{
+		Account:    s.mockAddress1,
+		Creator:    "",
+		RegionId:   wstakingtypes.MeEarthRegionId,
+		RegionName: wstakingtypes.MeEarthRegionName,
+		RewardType: 0,
+	})
 
-func calculateUriHash(uri string) string {
-	h := sha256.New()
-	h.Write([]byte(uri))
-	hash := h.Sum(nil)
-	return hex.EncodeToString(hash)
+	// Set up initial state with mock data
+	s.App.StakingKeeper.SetRegion(s.Ctx, wstakingtypes.Region{
+		RegionId: wstakingtypes.MeEarthRegionId,
+	})
+
+	s.App.StakingKeeper.SetFixedDeposit(s.Ctx, wstakingtypes.FixedDeposit{
+		Account:   s.mockAddress1,
+		Principal: sdk.NewCoin(params.BaseDenom, sdk.NewInt(1000)),
+	})
+
+	s.App.BankKeeper.SendCoins(s.Ctx,
+		authtypes.NewModuleAddress(wstakingtypes.StakePoolName),
+		authtypes.NewModuleAddress(wstakingtypes.FixedDepositPrincipalPool),
+		sdk.NewCoins(sdk.NewCoin(params.BaseDenom, sdk.NewInt(1000))))
+
+	// Call the MigrateFixedDeposit function
+	v2_0_10.MigrateFixedDeposit(s.Ctx, s.App.StakingKeeper, s.App.KycKeeper, s.App.BankKeeper)
+
+	// Verify the region's fixed deposit amount is updated
+	region, found := s.App.StakingKeeper.GetRegion(s.Ctx, wstakingtypes.MeEarthRegionId)
+	s.Require().True(found)
+	s.Require().Equal(sdk.NewInt(1000).String(), region.FixedDepositAmount.String())
+
+	// Verify the total deposit amount is equal to the balance
+	balance := s.App.BankKeeper.GetBalance(s.Ctx, authtypes.NewModuleAddress(wstakingtypes.FixedDepositPrincipalPool), params.BaseDenom)
+	s.Require().Equal(sdk.NewInt(1000).String(), balance.Amount.String())
 }
