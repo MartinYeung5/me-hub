@@ -37,7 +37,27 @@ cd ..
 # combine swagger files
 # uses nodejs package `swagger-combine`.
 # all the individual swagger files need to be configured in `config.json` for merging
-swagger-combine ./docs/config.json -o ./docs/static/openapi.yml -f yaml --continueOnConflictingPaths true --includeDefinitions true
+# Verify that the config file exists before combining
+if [ ! -f "./docs/config.json" ]; then
+    echo "ERROR: config.json not found at ./docs/config.json" >&2
+    exit 1
+fi
+
+# Ensure output directory exists
+if [ ! -d "./docs/static" ]; then
+    echo "INFO: Creating output directory ./docs/static"
+    mkdir -p "./docs/static"
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to create ./docs/static" >&2
+        exit 1
+    fi
+fi
+
+# Execute swagger-combine with proper error handling
+if ! swagger-combine ./docs/config.json -o ./docs/static/openapi.yml -f yaml --continueOnConflictingPaths true --includeDefinitions true; then
+    echo "ERROR: swagger-combine failed. Check config.json and input files." >&2
+    exit 1
+fi
 
 # clean swagger files
 #rm -rf ./tmp-swagger-gen
